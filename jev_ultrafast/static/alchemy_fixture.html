@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>TypeSafe Alchemy Fixture</title>
+    <style>
+      :root { font: 16px system-ui, sans-serif; color: #243128; background: #f4f0e7; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; }
+      main { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+      #sidebar { padding: 24px 16px; background: #fffaf0; border-right: 1px solid #d8cdbd; }
+      #inventory { display: grid; gap: 8px; margin-top: 16px; }
+      .item, .instance { border: 1px solid #b7a990; border-radius: 9px; background: white; padding: 10px 12px; }
+      .item { cursor: grab; user-select: none; }
+      .item:active { cursor: grabbing; }
+      #instances { position: relative; min-height: 100vh; overflow: hidden; padding: 40px; }
+      #instances::before { content: 'Drop ingredients on the board'; color: #9b8c76; position: absolute; left: 50%; top: 14%; transform: translate(-50%, -50%); pointer-events: none; }
+      .instance { position: absolute; transform: translate(-50%, -50%); cursor: grab; }
+      .instance-emoji, .item-emoji { margin-right: 5px; }
+      #status { margin-top: 18px; min-height: 24px; color: #6c5d4b; }
+    </style>
+  </head>
+  <body>
+    <main class="container infinite-craft">
+      <aside id="sidebar">
+        <strong>Inventory</strong>
+        <div id="inventory">
+          <div class="item" data-item="true" data-item-emoji="💧" data-item-text="Water" data-item-id="water"><span class="item-emoji">💧</span>Water</div>
+          <div class="item" data-item="true" data-item-emoji="🔥" data-item-text="Fire" data-item-id="fire"><span class="item-emoji">🔥</span>Fire</div>
+          <div class="item" data-item="true" data-item-emoji="🌬️" data-item-text="Wind" data-item-id="wind"><span class="item-emoji">🌬️</span>Wind</div>
+          <div class="item" data-item="true" data-item-emoji="🌍" data-item-text="Earth" data-item-id="earth"><span class="item-emoji">🌍</span>Earth</div>
+        </div>
+        <div id="status" role="status"></div>
+      </aside>
+      <section id="instances" aria-label="Crafting board"></section>
+    </main>
+    <script>
+      const recipes = new Map([
+        ['Fire|Water', ['Steam', '💨']],
+        ['Earth|Water', ['Mud', '🟤']],
+        ['Earth|Fire', ['Lava', '🌋']],
+        ['Fire|Wind', ['Smoke', '💨']],
+      ]);
+      let nextInstance = 1;
+      let pending = null;
+      let dragging = null;
+      const board = document.querySelector('#instances');
+      const inventory = document.querySelector('#inventory');
+      const status = document.querySelector('#status');
+      const key = (a, b) => [a, b].sort().join('|');
+      const makeInstance = (name, emoji) => {
+        const element = document.createElement('div');
+        element.className = 'instance';
+        element.dataset.instance = 'true';
+        element.style.left = `${20 + (nextInstance * 23) % 65}%`;
+        element.style.top = `${28 + (nextInstance * 19) % 55}%`;
+        element.innerHTML = `<span class="instance-emoji">${emoji}</span><span class="instance-text">${name}</span>`;
+        element.dataset.instanceId = String(nextInstance++);
+        board.append(element);
+        return element;
+      };
+      const itemData = (element) => ({ name: element.dataset.itemText, emoji: element.dataset.itemEmoji });
+      document.addEventListener('mousedown', event => {
+        const item = event.target.closest('.item');
+        if (!item) return;
+        dragging = item;
+        event.preventDefault();
+      });
+      document.addEventListener('mouseup', event => {
+        if (!dragging) return;
+        const source = itemData(dragging);
+        const instance = event.target.closest('.instance');
+        const onBoard = event.target.closest('#instances');
+        if (!instance && onBoard && !pending) {
+          pending = makeInstance(source.name, source.emoji);
+          status.textContent = `Pending: ${source.name}`;
+        } else if (instance && pending) {
+          const other = instance.querySelector('.instance-text').textContent;
+          const result = recipes.get(key(source.name, other));
+          pending.remove();
+          pending = null;
+          if (result) {
+            makeInstance(result[0], result[1]);
+            status.textContent = `${source.name} + ${other} → ${result[0]}`;
+            if (![...inventory.querySelectorAll('.item')].some(e => e.dataset.itemText === result[0])) {
+              const item = document.createElement('div');
+              item.className = 'item';
+              item.dataset.item = 'true';
+              item.dataset.itemEmoji = result[1];
+              item.dataset.itemText = result[0];
+              item.dataset.itemId = result[0].toLowerCase();
+              item.innerHTML = `<span class="item-emoji">${result[1]}</span>${result[0]}`;
+              inventory.append(item);
+            }
+          } else {
+            status.textContent = `${source.name} + ${other} produced nothing`;
+          }
+        }
+        dragging = null;
+      });
+    </script>
+  </body>
+</html>
