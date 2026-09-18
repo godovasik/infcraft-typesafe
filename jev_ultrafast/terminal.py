@@ -113,27 +113,26 @@ class TerminalAlchemyAgent:
             except (TypeError, ValueError):
                 continue
             if probability > 0:
-                if self.selection_mode == "probabilistic_squared":
-                    probability **= 2
-                candidates.append((element_id, probability))
+                weight = probability**2 if self.selection_mode == "probabilistic_squared" else probability
+                candidates.append((element_id, probability, weight))
 
-        total = sum(probability for _element_id, probability in candidates)
+        total = sum(weight for _element_id, _probability, weight in candidates)
         if not candidates or total <= 0:
             return decision["target"], fallback_probability
 
         threshold = self.rng.random() * total
         cumulative = 0.0
-        for element_id, probability in candidates:
-            cumulative += probability
+        for element_id, probability, weight in candidates:
+            cumulative += weight
             if threshold < cumulative:
-                return element_id, probability / total
-        element_id, probability = candidates[-1]
-        return element_id, probability / total
+                return element_id, probability
+        element_id, probability, _weight = candidates[-1]
+        return element_id, probability
 
     def _format_selected(self, item, probability):
         rendered = label(item)
-        if self.selection_mode in PROBABILISTIC_SELECTION_MODES and probability is not None:
-            rendered += f" ({float(probability):.0%})"
+        if probability is not None:
+            rendered += f" {float(probability):.0%}"
         return rendered
 
     def _progress(self):

@@ -60,7 +60,10 @@ def test_terminal_runner_prints_verified_pair(monkeypatch):
 
     def choose(state, _goal, _history):
         target = "el_1" if state["phase"] == "pick_first" else "el_2"
-        return {"target": target}
+        return {
+            "target": target,
+            "target_probabilities": {"el_1": 0.75, "el_2": 0.25},
+        }
 
     monkeypatch.setattr(terminal, "choose_alchemy_target", choose)
     api = FakeApi()
@@ -70,7 +73,7 @@ def test_terminal_runner_prints_verified_pair(monkeypatch):
     assert agent.run(output.append) == "done"
     assert output == [
         "target: Steam",
-        "💧 Water + 🔥 Fire = 💨 Steam ✦",
+        "💧 Water 75% + 🔥 Fire 25% = 💨 Steam ✦",
         "found: Steam after 1 attempt (2 Jev requests)",
     ]
     assert api.pairs == [("Water", "Fire")]
@@ -119,7 +122,8 @@ def test_probabilistic_squared_sharpens_jev_distribution():
     )
 
     assert selected == "el_1"
-    assert probability == pytest.approx(0.9)
+    assert probability == pytest.approx(0.75)
+    assert agent._format_selected(agent._find("el_1"), probability) == "💧 Water 75%"
 
 
 def test_probabilistic_runner_prints_selected_probabilities(monkeypatch):
@@ -157,7 +161,7 @@ def test_probabilistic_runner_prints_selected_probabilities(monkeypatch):
     assert agent.run(output.append) == "done"
     assert output == [
         "target: Steam [probabilistic selection]",
-        "💧 Water (75%) + 🔥 Fire (90%) = 💨 Steam ✦",
+        "💧 Water 75% + 🔥 Fire 90% = 💨 Steam ✦",
         "found: Steam after 1 attempt (2 Jev requests)",
     ]
 
