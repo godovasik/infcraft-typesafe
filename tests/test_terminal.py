@@ -99,6 +99,29 @@ def test_probabilistic_selection_samples_jev_distribution():
     assert probability == 0.25
 
 
+def test_probabilistic_squared_sharpens_jev_distribution():
+    class FakeRng:
+        def random(self):
+            return 0.85
+
+    agent = terminal.TerminalAlchemyAgent(
+        "Steam",
+        api=None,
+        selection_mode="probabilistic_squared",
+        rng=FakeRng(),
+    )
+
+    selected, probability = agent._select_target(
+        {
+            "target": "el_1",
+            "target_probabilities": {"el_1": 0.75, "el_2": 0.25},
+        }
+    )
+
+    assert selected == "el_1"
+    assert probability == pytest.approx(0.9)
+
+
 def test_probabilistic_runner_prints_selected_probabilities(monkeypatch):
     class FakeApi:
         def pair(self, first, second):

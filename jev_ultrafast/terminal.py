@@ -24,6 +24,7 @@ STARTERS = (
     ("el_4", "Earth", "🌍"),
 )
 DEFAULT_RUNS_FILE = "jev-craft-runs.jsonl"
+PROBABILISTIC_SELECTION_MODES = {"probabilistic", "probabilistic_squared"}
 
 
 def label(item):
@@ -53,7 +54,8 @@ class TerminalAlchemyAgent:
         self.goal = normalize_alchemy_goal(goal)
         if not self.goal:
             raise ValueError("Supply an alchemy goal")
-        if selection_mode not in {"deterministic", "probabilistic"}:
+        selection_mode = selection_mode.replace("-", "_")
+        if selection_mode not in {"deterministic", *PROBABILISTIC_SELECTION_MODES}:
             raise ValueError(f"Unknown selection mode: {selection_mode}")
         self.api = api
         self.max_model_calls = max_model_calls
@@ -98,7 +100,7 @@ class TerminalAlchemyAgent:
         """Return (element id, selection probability) for this model decision."""
         probabilities = decision.get("target_probabilities") or decision.get("probabilities") or {}
         fallback_probability = probabilities.get(decision["target"])
-        if self.selection_mode != "probabilistic" or not probabilities:
+        if self.selection_mode not in PROBABILISTIC_SELECTION_MODES or not probabilities:
             return decision["target"], fallback_probability
 
         offered_ids = {item["id"] for item in self.inventory}
@@ -111,6 +113,8 @@ class TerminalAlchemyAgent:
             except (TypeError, ValueError):
                 continue
             if probability > 0:
+                if self.selection_mode == "probabilistic_squared":
+                    probability **= 2
                 candidates.append((element_id, probability))
 
         total = sum(probability for _element_id, probability in candidates)
@@ -128,7 +132,7 @@ class TerminalAlchemyAgent:
 
     def _format_selected(self, item, probability):
         rendered = label(item)
-        if self.selection_mode == "probabilistic" and probability is not None:
+        if self.selection_mode in PROBABILISTIC_SELECTION_MODES and probability is not None:
             rendered += f" ({float(probability):.0%})"
         return rendered
 
@@ -153,8 +157,9 @@ class TerminalAlchemyAgent:
         return record
 
     def run(self, emit=print):
-        if self.selection_mode == "probabilistic":
-            emit(f"target: {self.goal} [probabilistic selection]")
+        if self.selection_mode in PROBABILISTIC_SELECTION_MODES:
+            mode_label = self.selection_mode.replace("_", " ")
+            emit(f"target: {self.goal} [{mode_label} selection]")
         else:
             emit(f"target: {self.goal}")
         while True:
@@ -244,7 +249,7 @@ def main():
         "--selection",
         "--mode",
         dest="selection",
-        choices=("deterministic", "probabilistic"),
+        choices=("deterministic", "probabilistic", "probabilistic-squared"),
         default="deterministic",
         help="Choose Jev's highest-probability target or sample its distribution",
     )
@@ -257,8 +262,9 @@ def main():
     args = parser.parse_args()
     if not os.environ.get("TYPESAFE_API_KEY"):
         parser.error("TYPESAFE_API_KEY is required")
+    selection_mode = args.selection.replace("-", "_")
     run_seed = args.seed
-    if args.selection == "probabilistic" and run_seed is None:
+    if selection_mode in PROBABILISTIC_SELECTION_MODES and run_seed is None:
         run_seed = random.SystemRandom().randrange(2**63)
     started_at = datetime.now(timezone.utc).isoformat()
     agent = None
@@ -271,7 +277,7 @@ def main():
                 args.goal,
                 api=api,
                 max_model_calls=args.max_model_calls,
-                selection_mode=args.selection,
+                selection_mode=selection_mode,
                 rng=random.Random(run_seed),
                 seed=run_seed,
             )
