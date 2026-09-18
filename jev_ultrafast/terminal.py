@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import random
 import sys
 
 from .alchemy import (
@@ -28,12 +29,24 @@ def label(item):
 class TerminalAlchemyAgent:
     """Keep Jev's semantic loop while using Neal.fun's pair API as the executor."""
 
-    def __init__(self, goal, *, api, max_model_calls=ALCHEMY_MAX_MODEL_CALLS):
+    def __init__(
+        self,
+        goal,
+        *,
+        api,
+        max_model_calls=ALCHEMY_MAX_MODEL_CALLS,
+        selection_mode="deterministic",
+        rng=None,
+    ):
         self.goal = normalize_alchemy_goal(goal)
         if not self.goal:
             raise ValueError("Supply an alchemy goal")
+        if selection_mode not in {"deterministic", "probabilistic"}:
+            raise ValueError(f"Unknown selection mode: {selection_mode}")
         self.api = api
         self.max_model_calls = max_model_calls
+        self.selection_mode = selection_mode
+        self.rng = rng if rng is not None else random.Random()
         self.inventory = [{"id": id_, "name": name, "emoji": emoji} for id_, name, emoji in STARTERS]
         self.next_id = len(self.inventory) + 1
         self.phase = "pick_first"
@@ -67,8 +80,49 @@ class TerminalAlchemyAgent:
         self.inventory.append(item)
         return item, True
 
+    def _select_target(self, decision):
+        """Return (element id, selection probability) for this model decision."""
+        probabilities = decision.get("target_probabilities") or decision.get("probabilities") or {}
+        fallback_probability = probabilities.get(decision["target"])
+        if self.selection_mode != "probabilistic" or not probabilities:
+            return decision["target"], fallback_probability
+
+        offered_ids = {item["id"] for item in self.inventory}
+        candidates = []
+        for element_id, probability in probabilities.items():
+            if element_id not in offered_ids:
+                continue
+            try:
+                probability = float(probability)
+            except (TypeError, ValueError):
+                continue
+            if probability > 0:
+                candidates.append((element_id, probability))
+
+        total = sum(probability for _element_id, probability in candidates)
+        if not candidates or total <= 0:
+            return decision["target"], fallback_probability
+
+        threshold = self.rng.random() * total
+        cumulative = 0.0
+        for element_id, probability in candidates:
+            cumulative += probability
+            if threshold < cumulative:
+                return element_id, probability / total
+        element_id, probability = candidates[-1]
+        return element_id, probability / total
+
+    def _format_selected(self, item, probability):
+        rendered = label(item)
+        if self.selection_mode == "probabilistic" and probability is not None:
+            rendered += f" ({float(probability):.0%})"
+        return rendered
+
     def run(self, emit=print):
-        emit(f"target: {self.goal}")
+        if self.selection_mode == "probabilistic":
+            emit(f"target: {self.goal} [probabilistic selection]")
+        else:
+            emit(f"target: {self.goal}")
         while True:
             if goal_is_visible(self.goal, self._observation()):
                 self.status = "done"
@@ -87,16 +141,24 @@ class TerminalAlchemyAgent:
 
             decision = choose_alchemy_target(state, self.goal, self.history)
             self.model_calls += 1
-            target = self._find(decision["target"])
+            target_id, target_probability = self._select_target(decision)
+            target = self._find(target_id)
             if self.phase == "pick_first":
                 self.pending = {
                     "element_id": target["id"],
                     "name": target["name"],
                     "emoji": target.get("emoji", ""),
+                    "selection_probability": target_probability,
                 }
                 self.phase = "pick_second"
-                self.history.append({"phase": "pick_first", "selected": target["id"]})
-                emit(f"{label(target)} ...")
+                self.history.append(
+                    {
+                        "phase": "pick_first",
+                        "selected": target["id"],
+                        "selection_probability": target_probability,
+                    }
+                )
+                emit(f"{self._format_selected(target, target_probability)} ...")
                 continue
 
             first = self.pending
@@ -106,7 +168,10 @@ class TerminalAlchemyAgent:
                 produced, new_discovery = self._add_result(result.name, result.emoji)
             result_label = label(produced) if produced else "∅"
             suffix = " ✦" if new_discovery else ""
-            emit(f"{label(first)} + {label(target)} = {result_label}{suffix}")
+            emit(
+                f"{self._format_selected(first, first.get('selection_probability'))} + "
+                f"{self._format_selected(target, target_probability)} = {result_label}{suffix}"
+            )
             self.known_results.append(
                 {
                     "first_id": first["element_id"],
@@ -115,6 +180,8 @@ class TerminalAlchemyAgent:
                     "second_id": target["id"],
                     "second": target["name"],
                     "second_emoji": target.get("emoji", ""),
+                    "first_probability": first.get("selection_probability"),
+                    "second_probability": target_probability,
                     "status": "success" if produced else "no_result",
                     "produced": produced["name"] if produced else None,
                     "produced_emoji": produced.get("emoji", "") if produced else "",
@@ -126,6 +193,7 @@ class TerminalAlchemyAgent:
                     "phase": "pick_second",
                     "pending": first["element_id"],
                     "selected": target["id"],
+                    "selection_probability": target_probability,
                     "status": "success" if produced else "no_result",
                 }
             )
@@ -138,6 +206,15 @@ def main():
     parser.add_argument("--goal", default="Steam", help="Target element name, for example Horse")
     parser.add_argument("--max-model-calls", type=int, default=ALCHEMY_MAX_MODEL_CALLS)
     parser.add_argument("--rate-limit", type=int, default=60, help="Neal.fun pair requests per minute")
+    parser.add_argument(
+        "--selection",
+        "--mode",
+        dest="selection",
+        choices=("deterministic", "probabilistic"),
+        default="deterministic",
+        help="Choose Jev's highest-probability target or sample its distribution",
+    )
+    parser.add_argument("--seed", type=int, help="Random seed for reproducible probabilistic runs")
     args = parser.parse_args()
     if not os.environ.get("TYPESAFE_API_KEY"):
         parser.error("TYPESAFE_API_KEY is required")
@@ -147,6 +224,8 @@ def main():
                 args.goal,
                 api=api,
                 max_model_calls=args.max_model_calls,
+                selection_mode=args.selection,
+                rng=random.Random(args.seed),
             ).run()
     except KeyboardInterrupt:
         print("stopped: interrupted", file=sys.stderr)

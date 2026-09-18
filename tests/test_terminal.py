@@ -73,3 +73,67 @@ def test_terminal_runner_prints_first_choice_then_verified_pair(monkeypatch):
         "found: Steam",
     ]
     assert api.pairs == [("Water", "Fire")]
+
+
+def test_probabilistic_selection_samples_jev_distribution():
+    class FakeRng:
+        def random(self):
+            return 0.9
+
+    agent = terminal.TerminalAlchemyAgent(
+        "Steam",
+        api=None,
+        selection_mode="probabilistic",
+        rng=FakeRng(),
+    )
+
+    selected, probability = agent._select_target(
+        {
+            "target": "el_1",
+            "target_probabilities": {"el_1": 0.75, "el_2": 0.25},
+        }
+    )
+
+    assert selected == "el_2"
+    assert probability == 0.25
+
+
+def test_probabilistic_runner_prints_selected_probabilities(monkeypatch):
+    class FakeApi:
+        def pair(self, first, second):
+            assert (first, second) == ("Water", "Fire")
+            return alchemy_api.PairResult("Steam", "💨", True)
+
+    class FakeRng:
+        values = iter((0.1, 0.2))
+
+        def random(self):
+            return next(self.values)
+
+    def choose(state, _goal, _history):
+        if state["phase"] == "pick_first":
+            return {
+                "target": "el_1",
+                "target_probabilities": {"el_1": 0.75, "el_2": 0.25},
+            }
+        return {
+            "target": "el_2",
+            "target_probabilities": {"el_1": 0.1, "el_2": 0.9},
+        }
+
+    monkeypatch.setattr(terminal, "choose_alchemy_target", choose)
+    output = []
+    agent = terminal.TerminalAlchemyAgent(
+        "Steam",
+        api=FakeApi(),
+        selection_mode="probabilistic",
+        rng=FakeRng(),
+    )
+
+    assert agent.run(output.append) == "done"
+    assert output == [
+        "target: Steam [probabilistic selection]",
+        "💧 Water (75%) ...",
+        "💧 Water (75%) + 🔥 Fire (90%) = 💨 Steam ✦",
+        "found: Steam",
+    ]
