@@ -43,10 +43,9 @@ The live showcase uses the real game and its own persistence; it does not clear 
 
 ### Terminal mode
 
-For a compact run without a browser, `jev-craft` keeps Jev as the chooser and calls Infinite Craft's pair endpoint directly. It prints the first choice immediately, then the verified combination result:
+For a compact run without a browser, `jev-craft` keeps Jev as the chooser and calls Infinite Craft's pair endpoint directly. Each verified combination is printed as one line:
 
 ```text
-💧 Water ...
 💧 Water + 🔥 Fire = 💨 Steam ✦
 found: Steam
 ```

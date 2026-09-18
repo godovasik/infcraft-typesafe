@@ -47,7 +47,7 @@ def test_api_stands_down_on_neal_rate_limit():
     assert len(pair_calls) == 1
 
 
-def test_terminal_runner_prints_first_choice_then_verified_pair(monkeypatch):
+def test_terminal_runner_prints_verified_pair(monkeypatch):
     class FakeApi:
         def __init__(self):
             self.pairs = []
@@ -68,7 +68,6 @@ def test_terminal_runner_prints_first_choice_then_verified_pair(monkeypatch):
     assert agent.run(output.append) == "done"
     assert output == [
         "target: Steam",
-        "💧 Water ...",
         "💧 Water + 🔥 Fire = 💨 Steam ✦",
         "found: Steam",
     ]
@@ -133,7 +132,6 @@ def test_probabilistic_runner_prints_selected_probabilities(monkeypatch):
     assert agent.run(output.append) == "done"
     assert output == [
         "target: Steam [probabilistic selection]",
-        "💧 Water (75%) ...",
         "💧 Water (75%) + 🔥 Fire (90%) = 💨 Steam ✦",
         "found: Steam",
     ]

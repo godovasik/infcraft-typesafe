@@ -158,7 +158,6 @@ class TerminalAlchemyAgent:
                         "selection_probability": target_probability,
                     }
                 )
-                emit(f"{self._format_selected(target, target_probability)} ...")
                 continue
 
             first = self.pending
