@@ -55,6 +55,58 @@ def test_semantic_state_and_targets_contain_only_observed_opaque_choices():
     assert "coordinate" not in json.dumps(state)
 
 
+def test_attempted_pairs_are_directionless_and_self_pairs_are_consumed():
+    known_results = [
+        {"first_id": "el_fire", "second_id": "el_water", "status": "success"},
+        {"first_id": "el_water", "second_id": "el_water", "status": "no_result"},
+    ]
+
+    second_targets = alchemy.action_targets(
+        observation(),
+        phase="pick_second",
+        pending={"element_id": "el_water"},
+        known_results=[known_results[0]],
+    )
+    first_targets = alchemy.action_targets(
+        observation(),
+        phase="pick_first",
+        known_results=known_results,
+    )
+
+    assert set(second_targets["ADD_ELEMENT"]) == {"el_water"}
+    assert set(first_targets["ADD_ELEMENT"]) == {"el_fire"}
+
+
+def test_adapter_rejects_an_already_attempted_pair_before_drag():
+    before = observation()
+
+    class FakeBrowser:
+        def __init__(self):
+            self.actions = []
+
+        def observe(self, **_kwargs):
+            return before
+
+        def act(self, action, _page):
+            self.actions.append(action)
+
+        def close(self):
+            pass
+
+    browser = FakeBrowser()
+    adapter = alchemy.AlchemyAdapter("unused", "Steam", browser=browser)
+    adapter.phase = "pick_second"
+    adapter.pending = {"instance_id": "inst_1", "element_id": "el_water", "name": "Water", "emoji": "💧"}
+    adapter.known_results = [
+        {"first_id": "el_fire", "second_id": "el_water", "status": "success"}
+    ]
+
+    with pytest.raises(ValueError, match="repeat"):
+        adapter.execute("el_fire")
+
+    assert browser.actions == []
+
+
 def test_alchemy_goal_accepts_a_bare_name_or_get_prefix():
     assert alchemy.normalize_alchemy_goal("Human") == "Human"
     assert alchemy.normalize_alchemy_goal("Get Human") == "Human"
@@ -138,8 +190,17 @@ def test_model_sends_one_semantic_request_and_validates_only_offered_target(monk
         {
             "phase": "pick_second",
             "inventory": observation()["inventory"],
-            "pending": {"instance_id": "inst_1", "name": "Water", "emoji": "💧"},
-            "known_results": [{"first": "Water", "second": "Earth", "status": "no_result"}],
+            "pending": {"instance_id": "inst_1", "element_id": "el_water", "name": "Water", "emoji": "💧"},
+            "known_results": [
+                {
+                    "first_id": "el_water",
+                    "second_id": "el_earth",
+                    "first": "Water",
+                    "second": "Earth",
+                    "status": "no_result",
+                }
+            ],
+            "available_target_ids": ["el_water", "el_fire"],
             "recent_actions": [],
         },
         "Получи Steam",
@@ -172,6 +233,36 @@ def test_model_done_does_not_require_a_target_head(monkeypatch):
 
     assert decision["choice"] == "DONE"
     assert decision["target"] is None
+
+
+def test_terminal_model_request_asks_only_for_an_offered_element(monkeypatch):
+    calls = []
+
+    def post(_url, _key, body):
+        calls.append(body)
+        targets = body["questions"]["add_element_target"]["criteria"]
+        return {
+            "model": "jev-latest",
+            "answers": {"add_element_target": choice(list(targets), "el_fire")},
+        }
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", post)
+    decision = model.choose_alchemy_target(
+        {
+            "phase": "pick_second",
+            "inventory": observation()["inventory"],
+            "pending": {"instance_id": "inst_1", "element_id": "el_water", "name": "Water", "emoji": "💧"},
+            "available_target_ids": ["el_water", "el_fire"],
+            "known_results": [],
+        },
+        "Steam",
+    )
+
+    assert decision["operation"] == "ADD_ELEMENT"
+    assert decision["target"] == "el_fire"
+    assert set(calls[0]["questions"]) == {"add_element_target"}
+    assert "DONE" not in json.dumps(calls[0])
 
 
 def test_model_provider_503_is_retried_before_returning_a_retryable_error(monkeypatch):

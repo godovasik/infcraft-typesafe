@@ -41,6 +41,41 @@ def _label(item):
     return item.get("label") or f"{item.get('emoji', '')} {item.get('name', '')}".strip()
 
 
+def pair_key(first_id, second_id):
+    """Return one direction-independent key for an element pair."""
+
+    if not first_id or not second_id:
+        return None
+    return tuple(sorted((first_id, second_id)))
+
+
+def attempted_pair_keys(known_results):
+    return {
+        key
+        for result in known_results
+        if (key := pair_key(result.get("first_id"), result.get("second_id"))) is not None
+    }
+
+
+def unexplored_target_ids(inventory, *, phase, pending=None, known_results=None):
+    """Return observed IDs whose next pair has not been tried in either direction."""
+
+    inventory_ids = list(dict.fromkeys(item.get("id") for item in inventory if item.get("id")))
+    attempted = attempted_pair_keys(known_results or [])
+    if phase == "pick_first":
+        return [
+            element_id
+            for element_id in inventory_ids
+            if any(pair_key(element_id, partner_id) not in attempted for partner_id in inventory_ids)
+        ]
+    if phase == "pick_second":
+        first_id = (pending or {}).get("element_id")
+        if not first_id:
+            return []
+        return [element_id for element_id in inventory_ids if pair_key(first_id, element_id) not in attempted]
+    raise ValueError("Unknown alchemy phase")
+
+
 def normalize_alchemy_goal(goal):
     """Accept a bare element name while remaining compatible with ``Get Steam`` examples."""
 
@@ -59,13 +94,10 @@ def exploration_summary(inventory, known_results):
 
     inventory_ids = {item.get("id") for item in inventory if item.get("id")}
     possible = len(inventory_ids) * (len(inventory_ids) + 1) // 2
-    attempted_pairs = set()
+    attempted_pairs = attempted_pair_keys(known_results)
     successful = 0
     failed = 0
     for result in known_results:
-        first_id, second_id = result.get("first_id"), result.get("second_id")
-        if first_id and second_id:
-            attempted_pairs.add(tuple(sorted((first_id, second_id))))
         if result.get("status") == "success":
             successful += 1
         elif result.get("status") == "no_result":
@@ -95,18 +127,34 @@ def semantic_state(observation, *, phase, pending=None, known_results=None, rece
         "busy": bool(observation.get("busy", False)),
         "known_results": all_results[-ALCHEMY_HISTORY_LIMIT:],
         "exploration": exploration_summary(observation.get("inventory", []), all_results),
+        "available_target_ids": unexplored_target_ids(
+            observation.get("inventory", []),
+            phase=phase,
+            pending=pending,
+            known_results=all_results,
+        ),
         "recent_actions": list(recent_actions or [])[-10:],
     }
 
 
-def action_targets(observation):
+def action_targets(observation, *, phase=None, pending=None, known_results=None):
     """Return operation-specific opaque targets, with no selectors or coordinates."""
 
+    allowed = None
+    if phase is not None:
+        allowed = set(
+            unexplored_target_ids(
+                observation.get("inventory", []),
+                phase=phase,
+                pending=pending,
+                known_results=known_results,
+            )
+        )
     return {
         "ADD_ELEMENT": {
             item["id"]: {"label": _label(item)}
             for item in observation.get("inventory", [])
-            if item.get("id") and item.get("name")
+            if item.get("id") and item.get("name") and (allowed is None or item["id"] in allowed)
         }
     }
 
@@ -350,7 +398,12 @@ class AlchemyAdapter:
                 recent_actions=self.history,
             ),
             "observation": self.observation,
-            "targets": action_targets(self.observation),
+            "targets": action_targets(
+                self.observation,
+                phase=self.phase,
+                pending=self.pending,
+                known_results=self.known_results,
+            ),
             "phase": self.phase,
             "pending": self.pending,
             "history": self.history[-10:],
@@ -362,6 +415,16 @@ class AlchemyAdapter:
     def execute(self, target_id):
         before = self.observation
         pending_before = self.pending
+        available = set(
+            unexplored_target_ids(
+                before.get("inventory", []),
+                phase=self.phase,
+                pending=pending_before,
+                known_results=self.known_results,
+            )
+        )
+        if target_id not in available:
+            raise ValueError("This element would repeat an already attempted combination")
         action = build_drag_action(
             before,
             phase=self.phase,

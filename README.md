@@ -41,6 +41,24 @@ uv run pytest tests/test_alchemy.py
 
 The live showcase uses the real game and its own persistence; it does not clear an existing browser profile. If Infinite Craft shows a CAPTCHA, complete it in the connected Chrome tab and start the run again.
 
+### Terminal mode
+
+For a compact run without a browser, `jev-craft` keeps Jev as the chooser and calls Infinite Craft's pair endpoint directly. It prints the first choice immediately, then the verified combination result:
+
+```text
+💧 Water ...
+💧 Water + 🔥 Fire = 💨 Steam ✦
+found: Steam
+```
+
+Run it with a target element:
+
+```bash
+uv run --env-file .env jev-craft --goal 'Horse'
+```
+
+The direct client uses the same Neal.fun pair API as the game, caches both directions of a pair locally during the run, and stops on Neal.fun's rate-limit response instead of retrying into a longer cooldown. The optional [infinite-craft-cli](https://github.com/hacker6284/infinite-craft-cli) project uses the same API approach and has additional bulk commands; this repository keeps Jev's step-by-step decisions and its own success/failure history.
+
 ## The action space
 
 Every observation produces a new element table:

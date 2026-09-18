@@ -195,7 +195,11 @@ function renderAlchemy() {
   if (page.screenshot) $("screenshot").src = `data:image/jpeg;base64,${page.screenshot}`;
   $("url").textContent = page.url;
   $("page-title").textContent = page.title;
-  $("action-count").textContent = `${inventory.length} elements`;
+  const offeredIds = new Set(Object.keys(state.targets?.ADD_ELEMENT || {}));
+  const elements = offeredIds.size ? inventory.filter((item) => offeredIds.has(item.id)) : inventory;
+  $("action-count").textContent = offeredIds.size && offeredIds.size !== inventory.length
+    ? `${offeredIds.size} available · ${inventory.length} total`
+    : `${inventory.length} elements`;
   $("choice-title").textContent = d
     ? d.operation === "ADD_ELEMENT"
       ? labels.get(d.target) || d.target
@@ -215,7 +219,6 @@ function renderAlchemy() {
     )
     .join("");
   const probability = (item) => d?.target_probabilities?.[item.id] ?? d?.probabilities?.[item.id] ?? -1;
-  const elements = [...inventory];
   if (d) elements.sort((a, b) => probability(b) - probability(a));
   $("choices").innerHTML = elements.length
     ? elements

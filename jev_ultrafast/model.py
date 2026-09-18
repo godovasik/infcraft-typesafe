@@ -175,23 +175,22 @@ def choose(state, goal, history):
     }
 
 
-def choose_alchemy(state, goal, recent_actions=None):
-    """Choose one semantic alchemy operation and, when needed, one observed element."""
-
+def _alchemy_targets(state):
+    offered_ids = (
+        set(state["available_target_ids"])
+        if "available_target_ids" in state
+        else {item.get("id") for item in state.get("inventory", [])}
+    )
     targets = {
         item["id"]: {"label": f"{item.get('emoji', '')} {item['name']}".strip()}
         for item in state.get("inventory", [])
-        if item.get("id") and item.get("name")
+        if item.get("id") in offered_ids and item.get("name")
     }
-    exploration = state.get("exploration") or {"unexplored_combinations": 1}
-    operations = {"DONE": "The requested result is visibly present."}
-    if targets:
-        operations = {"ADD_ELEMENT": "Add one observed element to the current crafting interaction.", **operations}
-        if exploration.get("unexplored_combinations", 0) == 0:
-            operations["BLOCKED"] = "All currently available combinations have been tested without reaching the target."
-    else:
-        operations["BLOCKED"] = "No inventory element is currently available to continue."
-    semantic = {
+    return targets
+
+
+def _alchemy_semantic_state(state, exploration, recent_actions):
+    return {
         "phase": state["phase"],
         "inventory": [
             {key: item.get(key, "") for key in ("id", "name", "emoji")}
@@ -200,8 +199,23 @@ def choose_alchemy(state, goal, recent_actions=None):
         "pending": state.get("pending"),
         "exploration": exploration,
         "known_results": list(state.get("known_results", []))[-ALCHEMY_HISTORY_LIMIT:],
-        "recent_actions": list(recent_actions if recent_actions is not None else state.get("recent_actions", []))[-10:],
+        "recent_actions": list(recent_actions or state.get("recent_actions", []))[-10:],
     }
+
+
+def choose_alchemy(state, goal, recent_actions=None):
+    """Choose one semantic alchemy operation and, when needed, one observed element."""
+
+    targets = _alchemy_targets(state)
+    exploration = state.get("exploration") or {"unexplored_combinations": 1}
+    operations = {"DONE": "The requested result is visibly present."}
+    if targets:
+        operations = {"ADD_ELEMENT": "Add one observed element to the current crafting interaction.", **operations}
+        if exploration.get("unexplored_combinations", 0) == 0:
+            operations["BLOCKED"] = "All currently available combinations have been tested without reaching the target."
+    else:
+        operations["BLOCKED"] = "No untested combination is available for the current crafting phase."
+    semantic = _alchemy_semantic_state(state, exploration, recent_actions)
     questions = {
         "operation": {
             "type": "choice",
@@ -245,6 +259,47 @@ def choose_alchemy(state, goal, recent_actions=None):
         "operation_probabilities": operation_answer["probabilities"],
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_answer["confidence"] if target_answer else None,
+        "raw_answers": result["answers"],
+        "model": result.get("model", body["model"]),
+        "usage": result.get("usage", {}),
+        "latency_ms": round((time.perf_counter() - started) * 1000),
+        "request": body,
+    }
+
+
+def choose_alchemy_target(state, goal, recent_actions=None):
+    """Choose only an offered element; program code owns stop conditions."""
+
+    targets = _alchemy_targets(state)
+    if not targets:
+        raise ValueError("No untested alchemy target is offered")
+    exploration = state.get("exploration") or {"unexplored_combinations": 1}
+    body = {
+        "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
+        "goal": goal,
+        "state": _alchemy_semantic_state(state, exploration, recent_actions),
+        "targets": {"ADD_ELEMENT": targets},
+        "questions": {
+            "add_element_target": {
+                "type": "choice",
+                "criteria": targets,
+                "instructions": {"goal": goal, "rules": ALCHEMY_TARGET},
+            }
+        },
+    }
+    started = time.perf_counter()
+    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    target_answer = validate_choice(result["answers"].get("add_element_target", {}), targets)
+    target = target_answer["choice"]
+    return {
+        "choice": target,
+        "operation": "ADD_ELEMENT",
+        "target": target,
+        "confidence": target_answer["confidence"],
+        "probabilities": target_answer["probabilities"],
+        "operation_probabilities": {"ADD_ELEMENT": 1.0},
+        "target_probabilities": target_answer["probabilities"],
+        "target_confidence": target_answer["confidence"],
         "raw_answers": result["answers"],
         "model": result.get("model", body["model"]),
         "usage": result.get("usage", {}),
