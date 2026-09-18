@@ -21,10 +21,15 @@ OPENAI_TEXT_MODEL = "gpt-5.6-luna"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 RETRYABLE_MODEL_STATUSES = {429, 500, 502, 503, 504, 529}
 MODEL_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+INVALID_RESPONSE_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
 
 class TransientModelError(RuntimeError):
     """A model provider is temporarily unavailable; no browser mutation was attempted."""
+
+
+class InvalidTypeSafeResponse(ValueError):
+    """The provider answered, but its choice/probability contract was invalid."""
 
 
 def post_json(url, key, body):
@@ -68,8 +73,32 @@ def validate_choice(answer, ids):
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
-        raise ValueError("Invalid TypeSafe response; no action executed.")
+        raise InvalidTypeSafeResponse("Invalid TypeSafe response; no action executed.")
     return answer
+
+
+def _response_answers(result):
+    if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
+        raise InvalidTypeSafeResponse("Invalid TypeSafe response; missing answers; no action executed.")
+    return result["answers"]
+
+
+def post_json_with_validation(url, key, body, parse):
+    """Retry a valid HTTP response when its TypeSafe choice payload is malformed."""
+
+    for attempt in range(len(INVALID_RESPONSE_RETRY_DELAYS) + 1):
+        result = post_json(url, key, body)
+        try:
+            parsed = parse(result)
+        except InvalidTypeSafeResponse as error:
+            if attempt < len(INVALID_RESPONSE_RETRY_DELAYS):
+                time.sleep(INVALID_RESPONSE_RETRY_DELAYS[attempt])
+                continue
+            raise InvalidTypeSafeResponse(
+                f"{error} Retried {len(INVALID_RESPONSE_RETRY_DELAYS)} times."
+            ) from None
+        return result, parsed, attempt + 1
+    raise InvalidTypeSafeResponse("Invalid TypeSafe response; no action executed.")
 
 
 def action_space(actions):
@@ -142,36 +171,55 @@ def choose(state, goal, history):
         },
         "questions": questions,
     }
+    def parse(result):
+        answers = _response_answers(result)
+        operation_answer = validate_choice(answers.get("operation", {}), operations)
+        operation = operation_answer["choice"]
+        target = None
+        target_answer = None
+        probabilities = {}
+        if operation in targets:
+            # Unused target heads cannot cause an action. Validate the head selected by the operation.
+            target_answer = validate_choice(answers.get(operation.lower() + "_target", {}), targets[operation])
+            target = target_answer["choice"]
+            choice = targets[operation][target]["id"]
+            probabilities = {
+                a["id"]: target_answer["probabilities"][index] for index, a in targets[operation].items()
+            }
+        else:
+            choice = controls[operation]["id"] if operation in controls else operation
+            probabilities[choice] = operation_answer["probabilities"][operation]
+        return {
+            "answers": answers,
+            "operation_answer": operation_answer,
+            "operation": operation,
+            "target": target,
+            "target_answer": target_answer,
+            "choice": choice,
+            "probabilities": probabilities,
+        }
+
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
-    operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
-    operation = operation_answer["choice"]
-    target = None
-    target_answer = None
-    probabilities = {}
-    if operation in targets:
-        # Unused target heads cannot cause an action. Validate the head selected by the operation.
-        target_answer = validate_choice(result["answers"].get(operation.lower() + "_target", {}), targets[operation])
-        target = target_answer["choice"]
-        choice = targets[operation][target]["id"]
-        probabilities = {a["id"]: target_answer["probabilities"][index] for index, a in targets[operation].items()}
-    else:
-        choice = controls[operation]["id"] if operation in controls else operation
-        probabilities[choice] = operation_answer["probabilities"][operation]
+    result, parsed, request_attempts = post_json_with_validation(
+        "https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body, parse
+    )
+    operation_answer = parsed["operation_answer"]
+    target_answer = parsed["target_answer"]
     return {
-        "choice": choice,
-        "operation": operation,
-        "target": target,
+        "choice": parsed["choice"],
+        "operation": parsed["operation"],
+        "target": parsed["target"],
         "confidence": operation_answer["confidence"],
-        "probabilities": probabilities,
+        "probabilities": parsed["probabilities"],
         "operation_probabilities": operation_answer["probabilities"],
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_answer["confidence"] if target_answer else None,
-        "raw_answers": result["answers"],
+        "raw_answers": parsed["answers"],
         "model": result["model"],
         "usage": result.get("usage", {}),
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "request": body,
+        "request_attempts": request_attempts,
     }
 
 
@@ -236,34 +284,51 @@ def choose_alchemy(state, goal, recent_actions=None):
         "targets": {"ADD_ELEMENT": targets} if targets else {},
         "questions": questions,
     }
+    def parse(result):
+        answers = _response_answers(result)
+        operation_answer = validate_choice(answers.get("operation", {}), operations)
+        operation = operation_answer["choice"]
+        target = None
+        target_answer = None
+        if operation == "ADD_ELEMENT":
+            target_answer = validate_choice(answers.get("add_element_target", {}), targets)
+            target = target_answer["choice"]
+            choice = target
+            probabilities = target_answer["probabilities"]
+        else:
+            choice = operation
+            probabilities = {operation: operation_answer["probabilities"][operation]}
+        return {
+            "answers": answers,
+            "operation_answer": operation_answer,
+            "operation": operation,
+            "target": target,
+            "target_answer": target_answer,
+            "choice": choice,
+            "probabilities": probabilities,
+        }
+
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
-    operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
-    operation = operation_answer["choice"]
-    target = None
-    target_answer = None
-    if operation == "ADD_ELEMENT":
-        target_answer = validate_choice(result["answers"].get("add_element_target", {}), targets)
-        target = target_answer["choice"]
-        choice = target
-        probabilities = target_answer["probabilities"]
-    else:
-        choice = operation
-        probabilities = {operation: operation_answer["probabilities"][operation]}
+    result, parsed, request_attempts = post_json_with_validation(
+        "https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body, parse
+    )
+    operation_answer = parsed["operation_answer"]
+    target_answer = parsed["target_answer"]
     return {
-        "choice": choice,
-        "operation": operation,
-        "target": target,
+        "choice": parsed["choice"],
+        "operation": parsed["operation"],
+        "target": parsed["target"],
         "confidence": operation_answer["confidence"],
-        "probabilities": probabilities,
+        "probabilities": parsed["probabilities"],
         "operation_probabilities": operation_answer["probabilities"],
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_answer["confidence"] if target_answer else None,
-        "raw_answers": result["answers"],
+        "raw_answers": parsed["answers"],
         "model": result.get("model", body["model"]),
         "usage": result.get("usage", {}),
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "request": body,
+        "request_attempts": request_attempts,
     }
 
 
@@ -287,9 +352,15 @@ def choose_alchemy_target(state, goal, recent_actions=None):
             }
         },
     }
+    def parse(result):
+        answers = _response_answers(result)
+        return answers, validate_choice(answers.get("add_element_target", {}), targets)
+
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
-    target_answer = validate_choice(result["answers"].get("add_element_target", {}), targets)
+    result, parsed, request_attempts = post_json_with_validation(
+        "https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body, parse
+    )
+    answers, target_answer = parsed
     target = target_answer["choice"]
     return {
         "choice": target,
@@ -300,11 +371,12 @@ def choose_alchemy_target(state, goal, recent_actions=None):
         "operation_probabilities": {"ADD_ELEMENT": 1.0},
         "target_probabilities": target_answer["probabilities"],
         "target_confidence": target_answer["confidence"],
-        "raw_answers": result["answers"],
+        "raw_answers": answers,
         "model": result.get("model", body["model"]),
         "usage": result.get("usage", {}),
         "latency_ms": round((time.perf_counter() - started) * 1000),
         "request": body,
+        "request_attempts": request_attempts,
     }
 
 

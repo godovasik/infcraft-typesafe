@@ -62,6 +62,8 @@ To explore with Jev's probabilities instead of always taking its top choice, use
 uv run --env-file .env jev-craft --goal 'Horse' --selection probabilistic --seed 42
 ```
 
+Each run appends one JSON record to `jev-craft-runs.jsonl` (the file is gitignored), including the target, mode, seed, combination attempts, and Jev request count. Use `--runs-file path/to/runs.jsonl` to choose another file.
+
 The direct client uses the same Neal.fun pair API as the game, caches both directions of a pair locally during the run, and stops on Neal.fun's rate-limit response instead of retrying into a longer cooldown. The optional [infinite-craft-cli](https://github.com/hacker6284/infinite-craft-cli) project uses the same API approach and has additional bulk commands; this repository keeps Jev's step-by-step decisions and its own success/failure history.
 
 ## The action space

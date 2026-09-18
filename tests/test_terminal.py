@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from jev_ultrafast import alchemy_api, terminal
@@ -69,7 +71,7 @@ def test_terminal_runner_prints_verified_pair(monkeypatch):
     assert output == [
         "target: Steam",
         "💧 Water + 🔥 Fire = 💨 Steam ✦",
-        "found: Steam",
+        "found: Steam after 1 attempt (2 Jev requests)",
     ]
     assert api.pairs == [("Water", "Fire")]
 
@@ -133,5 +135,23 @@ def test_probabilistic_runner_prints_selected_probabilities(monkeypatch):
     assert output == [
         "target: Steam [probabilistic selection]",
         "💧 Water (75%) + 🔥 Fire (90%) = 💨 Steam ✦",
-        "found: Steam",
+        "found: Steam after 1 attempt (2 Jev requests)",
     ]
+
+
+def test_append_run_writes_one_json_record_per_line(tmp_path):
+    path = tmp_path / "runs.jsonl"
+    record = {
+        "target": "Sun",
+        "mode": "probabilistic",
+        "seed": 42,
+        "attempts": 17,
+        "jev_requests": 34,
+        "status": "done",
+    }
+
+    terminal.append_run(path, record)
+    terminal.append_run(path, {**record, "target": "Moon"})
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line) for line in lines] == [record, {**record, "target": "Moon"}]

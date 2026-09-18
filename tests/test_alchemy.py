@@ -265,6 +265,49 @@ def test_terminal_model_request_asks_only_for_an_offered_element(monkeypatch):
     assert "DONE" not in json.dumps(calls[0])
 
 
+def test_invalid_terminal_choice_is_retried(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def post(_url, _key, body):
+        calls.append(body)
+        targets = body["questions"]["add_element_target"]["criteria"]
+        if len(calls) == 1:
+            return {
+                "model": "jev-latest",
+                "answers": {
+                    "add_element_target": {
+                        "choice": "el_fire",
+                        "confidence": 1.0,
+                        "probabilities": {"el_fire": 1.0},
+                    }
+                },
+            }
+        return {
+            "model": "jev-latest",
+            "answers": {"add_element_target": choice(list(targets), "el_fire")},
+        }
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", post)
+    monkeypatch.setattr(model.time, "sleep", sleeps.append)
+    decision = model.choose_alchemy_target(
+        {
+            "phase": "pick_second",
+            "inventory": observation()["inventory"],
+            "pending": {"element_id": "el_water", "name": "Water", "emoji": "💧"},
+            "available_target_ids": ["el_water", "el_fire"],
+            "known_results": [],
+        },
+        "Steam",
+    )
+
+    assert decision["target"] == "el_fire"
+    assert decision["request_attempts"] == 2
+    assert len(calls) == 2
+    assert sleeps == [0.5]
+
+
 def test_model_provider_503_is_retried_before_returning_a_retryable_error(monkeypatch):
     responses = iter(
         [
